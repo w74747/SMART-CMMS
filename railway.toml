@@ -1,0 +1,55 @@
+// =============================================================================
+// src/common/interceptors/transform.interceptor.ts
+// Wraps every successful controller response in a standard envelope.
+// Ensures frontend always receives: { success, data, meta?, timestamp }
+// =============================================================================
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  NestInterceptor,
+} from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { Request } from 'express';
+
+export interface ApiSuccessResponse<T> {
+  success: true;
+  data: T;
+  meta?: Record<string, unknown>;
+  timestamp: string;
+  requestId?: string;
+}
+
+@Injectable()
+export class TransformInterceptor<T>
+  implements NestInterceptor<T, ApiSuccessResponse<T>>
+{
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler<T>,
+  ): Observable<ApiSuccessResponse<T>> {
+    const request = context.switchToHttp().getRequest<Request>();
+
+    return next.handle().pipe(
+      map((data) => {
+        // If the controller already returned a shaped response, pass through
+        if (data && typeof data === 'object' && 'success' in (data as object)) {
+          return data as unknown as ApiSuccessResponse<T>;
+        }
+
+        // Standard envelope
+        const response: ApiSuccessResponse<T> = {
+          success:   true,
+          data,
+          timestamp: new Date().toISOString(),
+        };
+
+        const requestId = request.headers['x-request-id'] as string | undefined;
+        if (requestId) response.requestId = requestId;
+
+        return response;
+      }),
+    );
+  }
+}

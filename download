@@ -1,0 +1,112 @@
+// =============================================================================
+// src/common/guards/roles.guard.ts
+// Smart CMMS — Role-Based Access Control Guard
+// =============================================================================
+
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  SetMetadata,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { Request } from 'express';
+
+// ─── Role Enum (mirrors Prisma schema) ───────────────────────────────────────
+
+export enum UserRole {
+  SUPER_ADMIN            = 'SUPER_ADMIN',
+  COMPANY_ADMIN          = 'COMPANY_ADMIN',
+  MAINTENANCE_MANAGER    = 'MAINTENANCE_MANAGER',
+  MAINTENANCE_SUPERVISOR = 'MAINTENANCE_SUPERVISOR',
+  TECHNICIAN             = 'TECHNICIAN',
+  STOREKEEPER            = 'STOREKEEPER',
+  VIEWER                 = 'VIEWER',
+}
+
+/**
+ * Role hierarchy — higher index = higher authority.
+ * A role can always perform actions allowed for roles below it in the chain.
+ */
+export const ROLE_HIERARCHY: UserRole[] = [
+  UserRole.VIEWER,
+  UserRole.TECHNICIAN,
+  UserRole.STOREKEEPER,
+  UserRole.MAINTENANCE_SUPERVISOR,
+  UserRole.MAINTENANCE_MANAGER,
+  UserRole.COMPANY_ADMIN,
+  UserRole.SUPER_ADMIN,
+];
+
+// ─── Metadata Key ─────────────────────────────────────────────────────────────
+
+export const ROLES_KEY = 'roles';
+
+/**
+ * @Roles() decorator — attach required roles to a controller or route handler.
+ *
+ * Usage:
+ *   @Roles(UserRole.MAINTENANCE_MANAGER, UserRole.COMPANY_ADMIN)
+ *   @Put('/work-orders/:id/approve')
+ *   async approve(...) { ... }
+ */
+export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
+
+// ─── Guard ────────────────────────────────────────────────────────────────────
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    // Get required roles from @Roles() decorator
+    const requiredRoles = this.reflector.getAllAndOverride<UserRole[]>(
+      ROLES_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    // If no @Roles() decorator, route is accessible to any authenticated user
+    if (!requiredRoles || requiredRoles.length === 0) {
+      return true;
+    }
+
+    const request = context.switchToHttp().getRequest<Request>();
+    const tenantContext = request.tenantContext;
+
+    if (!tenantContext) {
+      throw new ForbiddenException(
+        'No tenant context found. Ensure TenantMiddleware is applied.',
+      );
+    }
+
+    const userRole = tenantContext.role as UserRole;
+
+    // Check if user's role is in the explicitly required roles list
+    // OR if user's role is higher in the hierarchy than any required role
+    const hasRole = requiredRoles.some((required) =>
+      this.roleHasPermission(userRole, required),
+    );
+
+    if (!hasRole) {
+      throw new ForbiddenException(
+        `Access denied. Required role(s): [${requiredRoles.join(', ')}]. ` +
+          `Your role: ${userRole}.`,
+      );
+    }
+
+    return true;
+  }
+
+  /**
+   * Returns true if the user's role has equal or greater authority
+   * than the required role based on ROLE_HIERARCHY.
+   */
+  private roleHasPermission(userRole: UserRole, requiredRole: UserRole): boolean {
+    const userIndex    = ROLE_HIERARCHY.indexOf(userRole);
+    const requiredIndex = ROLE_HIERARCHY.indexOf(requiredRole);
+
+    if (userIndex === -1 || requiredIndex === -1) return false;
+    return userIndex >= requiredIndex;
+  }
+}
