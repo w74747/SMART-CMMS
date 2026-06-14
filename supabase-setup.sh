@@ -1,97 +1,91 @@
 #!/bin/bash
-# =============================================================================
-# Smart CMMS — Supabase + Prisma Full Setup Script
-# Run this AFTER install.sh and AFTER filling in your .env file
-# =============================================================================
 set -e
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()    { echo -e "${CYAN}[INFO]${NC} $1"; }
-success() { echo -e "${GREEN}[OK]${NC}   $1"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error()   { echo -e "${RED}[ERR]${NC}  $1"; exit 1; }
-step()    { echo -e "\n${CYAN}━━━ $1 ━━━${NC}"; }
+info()    { echo -e "${CYAN}[INFO]${NC}  $1"; }
+success() { echo -e "${GREEN}[ OK ]${NC}  $1"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC}  $1"; }
+err()     { echo -e "${RED}[ERR ]${NC}  $1"; exit 1; }
 
-# ─── STEP 1: Check .env exists ───────────────────────────────────────────────
-step "1 — Check environment file"
+echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗"
+echo    "║   Smart CMMS — Supabase + Prisma Setup Script           ║"
+echo -e "╚══════════════════════════════════════════════════════════╝${NC}"
+echo ""
 
+# ── Step 1: .env ──────────────────────────────────────────────────────────────
+info "Step 1 — Checking .env file"
 if [ ! -f ".env" ]; then
-  if [ -f ".env.example" ]; then
-    cp .env.example .env
-    warn ".env created from .env.example"
-    echo ""
-    echo "  Fill in these values in .env before continuing:"
-    echo "  ┌─ DATABASE_URL     → Supabase → Settings → Database → Transaction pooler (port 6543)"
-    echo "  ├─ DIRECT_URL       → Supabase → Settings → Database → Session pooler    (port 5432)"
-    echo "  ├─ SUPABASE_URL     → Supabase → Settings → API → Project URL"
-    echo "  ├─ SUPABASE_ANON_KEY"
-    echo "  ├─ SUPABASE_SERVICE_ROLE_KEY"
-    echo "  ├─ JWT_ACCESS_SECRET  ← run: openssl rand -hex 64"
-    echo "  └─ JWT_REFRESH_SECRET ← run: openssl rand -hex 64"
-    echo ""
-    read -p "Press ENTER after filling in .env..." -r
-  else
-    error "No .env or .env.example found. Run install.sh first."
-  fi
+  [ -f ".env.example" ] && cp .env.example .env || err ".env.example not found. Run smart-cmms-full-install.sh first."
+  warn ".env created. Fill in your values now:"
+  echo ""
+  echo "  DATABASE_URL          → Supabase Dashboard → Settings → Database"
+  echo "                          → Transaction pooler string (port 6543)"
+  echo "  DIRECT_URL            → Same page → Session pooler string (port 5432)"
+  echo "  SUPABASE_URL          → Settings → API → Project URL"
+  echo "  SUPABASE_ANON_KEY     → Settings → API → Publishable key"
+  echo "  SUPABASE_SERVICE_ROLE_KEY → Settings → API → Secret key"
+  echo "  JWT_ACCESS_SECRET     → run: openssl rand -hex 64"
+  echo "  JWT_REFRESH_SECRET    → run: openssl rand -hex 64  (different value)"
+  echo ""
+  echo "  Bucket names to CREATE in Supabase Storage → New bucket:"
+  echo "    cmms-asset-documents   (public: OFF)"
+  echo "    cmms-work-order-photos (public: OFF)"
+  echo "    cmms-bulk-imports      (public: OFF)"
+  echo "    cmms-exports           (public: OFF)"
+  echo ""
+  read -p "Press ENTER after you have filled in .env..." -r
 fi
 
-# Load .env
 set -o allexport; source .env; set +o allexport
 success ".env loaded"
 
-# ─── STEP 2: Validate required vars ──────────────────────────────────────────
-step "2 — Validate environment variables"
-
-for var in DATABASE_URL DIRECT_URL JWT_ACCESS_SECRET JWT_REFRESH_SECRET SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY; do
+# ── Step 2: Validate ──────────────────────────────────────────────────────────
+info "Step 2 — Validating required environment variables"
+for var in DATABASE_URL DIRECT_URL JWT_ACCESS_SECRET JWT_REFRESH_SECRET \
+           SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY \
+           SUPABASE_BUCKET_ASSETS SUPABASE_BUCKET_WORK_ORDERS; do
   val="${!var:-}"
-  if [ -z "$val" ] || [[ "$val" == *"REPLACE_WITH"* ]] || [[ "$val" == *"your_"* ]] || [[ "$val" == *"[PASSWORD]"* ]]; then
-    error "$var is missing or still has a placeholder value in .env"
+  if [ -z "$val" ] || [[ "$val" == *"REPLACE_WITH"* ]] || [[ "$val" == *"your_"* ]] || [[ "$val" == *"[PASSWORD]"* ]] || [[ "$val" == *"[PROJECT"* ]]; then
+    err "$var is missing or still has a placeholder value in .env"
   fi
+  echo "      ✓ $var"
 done
-success "All required environment variables are set"
+success "All variables validated"
 
-# ─── STEP 3: Install psql client ─────────────────────────────────────────────
-step "3 — Install PostgreSQL client (psql)"
-
+# ── Step 3: Install psql ──────────────────────────────────────────────────────
+info "Step 3 — Checking psql client"
 if ! command -v psql &>/dev/null; then
-  info "Installing psql..."
+  info "Installing postgresql-client..."
   sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
 fi
-success "psql available: $(psql --version)"
+success "psql available: $(psql --version | head -1)"
 
-# ─── STEP 4: Test Supabase connection ────────────────────────────────────────
-step "4 — Test Supabase database connection"
-
-if psql "$DIRECT_URL" -c "SELECT 1 AS connected;" -t 2>/dev/null | grep -q "1"; then
+# ── Step 4: Test connection ───────────────────────────────────────────────────
+info "Step 4 — Testing Supabase database connection"
+if psql "$DIRECT_URL" -c "SELECT 1;" -t 2>/dev/null | grep -q "1"; then
   success "Supabase connection successful!"
 else
   echo ""
-  error "Cannot connect to Supabase. Check:
-  1. DIRECT_URL in .env is correct (port 5432, NOT 6543)
-  2. Supabase project is not paused (dashboard → project)
-  3. Password is URL-encoded (@ → %40, # → %23, etc.)
-  4. Network restrictions: Supabase → Settings → Network → Allow all IPs"
+  err "Cannot connect. Check:
+  1. DIRECT_URL uses port 5432 (NOT 6543)
+  2. Project is not paused in Supabase dashboard
+  3. Password has no unencoded special chars
+  4. Supabase → Settings → Network → 'Allow all origins'"
 fi
 
-# ─── STEP 5: Create schemas ───────────────────────────────────────────────────
-step "5 — Create PostgreSQL schemas"
-
-psql "$DIRECT_URL" << 'SQL'
+# ── Step 5: Create schemas ────────────────────────────────────────────────────
+info "Step 5 — Creating PostgreSQL schemas"
+psql "$DIRECT_URL" -v ON_ERROR_STOP=0 << 'SQL'
 CREATE SCHEMA IF NOT EXISTS tenant_template;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA public;
 CREATE EXTENSION IF NOT EXISTS "pgcrypto"  SCHEMA public;
-
-SELECT schema_name
-FROM   information_schema.schemata
-WHERE  schema_name IN ('public', 'tenant_template')
-ORDER  BY schema_name;
+SELECT schema_name FROM information_schema.schemata
+WHERE schema_name IN ('public','tenant_template') ORDER BY schema_name;
 SQL
-
 success "Schemas ready: public + tenant_template"
 
-# ─── STEP 6: Create tenant provisioning functions ────────────────────────────
-step "6 — Deploy tenant provisioning SQL functions"
-
+# ── Step 6: Deploy SQL functions ──────────────────────────────────────────────
+info "Step 6 — Deploying tenant provisioning SQL functions"
 psql "$DIRECT_URL" << 'SQL'
 CREATE OR REPLACE FUNCTION public.fn_provision_tenant_schema(p_schema_name TEXT)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
@@ -106,7 +100,7 @@ BEGIN
   EXECUTE format('CREATE SCHEMA %I', p_schema_name);
   FOR v_table IN
     SELECT table_name FROM information_schema.tables
-    WHERE  table_schema = 'tenant_template' AND table_type = 'BASE TABLE'
+    WHERE table_schema = 'tenant_template' AND table_type = 'BASE TABLE'
     ORDER BY table_name
   LOOP
     EXECUTE format('CREATE TABLE %I.%I (LIKE tenant_template.%I INCLUDING ALL)',
@@ -129,74 +123,53 @@ BEGIN
   RAISE NOTICE 'Schema "%" deleted.', p_schema_name;
 END;
 $$;
-
-SELECT 'Provisioning functions deployed' AS status;
+SELECT 'SQL functions deployed' AS status;
 SQL
-
 success "SQL functions deployed"
 
-# ─── STEP 7: npm install ─────────────────────────────────────────────────────
-step "7 — Install Node.js dependencies"
-
-npm install
-success "Dependencies installed"
-
-# ─── STEP 8: Generate Prisma client ──────────────────────────────────────────
-step "8 — Generate Prisma Client"
-
+# ── Step 7: Prisma generate ───────────────────────────────────────────────────
+info "Step 7 — Generating Prisma Client"
 npx prisma generate
-success "Prisma client generated"
+success "Prisma Client generated"
 
-# ─── STEP 9: Push schema to Supabase ─────────────────────────────────────────
-step "9 — Push database schema to Supabase"
-
-# Using db push (no shadow DB needed) — safer for Supabase hosted
+# ── Step 8: Push schema ───────────────────────────────────────────────────────
+info "Step 8 — Pushing schema to Supabase (prisma db push)"
 npx prisma db push --accept-data-loss
-success "Database schema pushed to Supabase"
+success "Database schema pushed"
 
-# Verify tables
-info "Verifying tables in Supabase..."
+info "Verifying tables..."
 psql "$DIRECT_URL" -c "
-SELECT table_schema, COUNT(*) AS tables
-FROM   information_schema.tables
-WHERE  table_schema IN ('public','tenant_template')
-  AND  table_type = 'BASE TABLE'
-GROUP  BY table_schema
-ORDER  BY table_schema;
-"
+SELECT table_schema, COUNT(*) AS table_count
+FROM information_schema.tables
+WHERE table_schema IN ('public','tenant_template')
+  AND table_type = 'BASE TABLE'
+GROUP BY table_schema ORDER BY table_schema;"
 
-# ─── STEP 10: Create demo tenant ─────────────────────────────────────────────
-step "10 — Create demo tenant schema"
-
+# ── Step 9: Demo tenant ───────────────────────────────────────────────────────
+info "Step 9 — Creating demo tenant schema (tenant_demo)"
 psql "$DIRECT_URL" -c "SELECT public.fn_provision_tenant_schema('tenant_demo');" 2>/dev/null \
-  && success "Demo tenant schema 'tenant_demo' created" \
-  || warn "Demo tenant may already exist — skipping"
+  && success "Demo schema 'tenant_demo' created" \
+  || warn "Demo schema may already exist — skipping"
 
-# ─── STEP 11: Generate JWT secrets helper ────────────────────────────────────
-step "11 — JWT Secret Generator"
-
-if command -v openssl &>/dev/null; then
-  echo ""
-  echo "  Use these fresh secrets in your .env:"
-  echo -n "  JWT_ACCESS_SECRET=";  openssl rand -hex 64
-  echo -n "  JWT_REFRESH_SECRET="; openssl rand -hex 64
-  echo ""
-fi
-
-# ─── STEP 12: Start dev server ────────────────────────────────────────────────
-step "12 — Start development server"
-
+# ── Step 10: JWT helper ───────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║      Setup Complete! Ready to start 🚀           ║${NC}"
-echo -e "${GREEN}╠══════════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║  Run: npm run start:dev                          ║${NC}"
-echo -e "${GREEN}║  API: http://localhost:3000/api/v1               ║${NC}"
-echo -e "${GREEN}║  Docs: http://localhost:3000/api-docs            ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
+info "Step 10 — Fresh JWT secrets (use these in .env if not already set):"
 echo ""
-read -p "Start dev server now? [Y/n] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-  npm run start:dev
-fi
+echo -n "  JWT_ACCESS_SECRET=";  openssl rand -hex 64
+echo -n "  JWT_REFRESH_SECRET="; openssl rand -hex 64
+echo ""
+
+# ── Done ─────────────────────────────────────────────────────────────────────
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗"
+echo    "║  ✅  Supabase setup complete!                            ║"
+echo    "╠══════════════════════════════════════════════════════════╣"
+echo    "║  Run now:                                                ║"
+echo    "║    npm run start:dev                                     ║"
+echo    "║                                                          ║"
+echo    "║  Then open:                                              ║"
+echo    "║    http://localhost:3000/api-docs  ← Swagger UI          ║"
+echo    "║    http://localhost:3000/health    ← Health check        ║"
+echo -e "╚══════════════════════════════════════════════════════════╝${NC}"
+
+read -p "Start dev server now? [Y/n] " -n 1 -r; echo
+[[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]] && npm run start:dev
